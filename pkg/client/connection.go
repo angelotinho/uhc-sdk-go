@@ -38,8 +38,8 @@ import (
 // Default values:
 const (
 	// #nosec G101
-	DefaultTokenURL     = "https://developers.redhat.com/auth/realms/rhd/protocol/openid-connect/token"
-	DefaultClientID     = "uhc"
+	DefaultTokenURL     = "https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token"
+	DefaultClientID     = "cloud-services"
 	DefaultClientSecret = ""
 	DefaultURL          = "https://api.openshift.com"
 	DefaultAgent        = "UHC/" + Version
@@ -132,15 +132,15 @@ func (b *ConnectionBuilder) Logger(logger Logger) *ConnectionBuilder {
 }
 
 // TokenURL sets the URL that will be used to request OpenID access tokens. The default is
-// `https://developers.redhat.com/auth/realms/rhd/protocol/openid-connect/token`.
+// `https://sso.redhat.com/auth/realms/redhat-external/protocol/openid-connect/token`.
 func (b *ConnectionBuilder) TokenURL(url string) *ConnectionBuilder {
 	b.tokenURL = url
 	return b
 }
 
 // Client sets OpenID client identifier and secret that will be used to request OpenID tokens. The
-// default identifier is `uhc` and the default secret is the empty string. When these two values are
-// provided and no user name and password is provided, the connection will use the client
+// default identifier is `cloud-services` and the default secret is the empty string. When these two
+// values are provided and no user name and password is provided, the connection will use the client
 // credentials grant to obtain the token. For example, to create a connection using the client
 // credentials grant do the following:
 //
@@ -331,6 +331,22 @@ func (b *ConnectionBuilder) BuildContext(ctx context.Context) (connection *Conne
 		return
 	}
 
+	// Create the default logger, if needed:
+	logger := b.logger
+	if logger == nil {
+		logger, err = NewGoLoggerBuilder().
+			Debug(false).
+			Info(true).
+			Warn(true).
+			Error(true).
+			Build()
+		if err != nil {
+			err = fmt.Errorf("can't create default logger: %v", err)
+			return
+		}
+		logger.Debug(ctx, "Logger wasn't provided, will use Go log")
+	}
+
 	// Parse the tokens:
 	tokenParser := new(jwt.Parser)
 	var accessToken *jwt.Token
@@ -370,22 +386,6 @@ func (b *ConnectionBuilder) BuildContext(ctx context.Context) (connection *Conne
 		}
 	}
 
-	// Create the default logger, if needed:
-	logger := b.logger
-	if logger == nil {
-		logger, err = NewGoLoggerBuilder().
-			Debug(false).
-			Info(true).
-			Warn(true).
-			Error(true).
-			Build()
-		if err != nil {
-			err = fmt.Errorf("can't create default logger: %v", err)
-			return
-		}
-		logger.Debug(ctx, "Logger wasn't provided, will use Go log")
-	}
-
 	// Set the default authentication details, if needed:
 	rawTokenURL := b.tokenURL
 	if rawTokenURL == "" {
@@ -418,6 +418,46 @@ func (b *ConnectionBuilder) BuildContext(ctx context.Context) (connection *Conne
 			"OpenID client secret wasn't provided, will use '%s'",
 			clientSecret,
 		)
+	}
+
+	// Check that the issuers of the tokens match the selected URL:
+	if accessToken != nil {
+		var accessIssuer *url.URL
+		accessIssuer, err = tokenIssuer(accessToken)
+		if err != nil {
+			err = fmt.Errorf("can't obtain access token issuer: %v", err)
+			return
+		}
+		if accessIssuer != nil {
+			if accessIssuer.Host != tokenURL.Host {
+				logger.Warn(
+					ctx,
+					"Access token issuer '%s' doesn't match token URL '%s', "+
+						"that probably means that you are using a wrong "+
+						"access token",
+					accessIssuer, tokenURL,
+				)
+			}
+		}
+	}
+	if refreshToken != nil {
+		var refreshIssuer *url.URL
+		refreshIssuer, err = tokenIssuer(refreshToken)
+		if err != nil {
+			err = fmt.Errorf("can't obtain refresh token issuer: %v", err)
+			return
+		}
+		if refreshIssuer != nil {
+			if refreshIssuer.Host != tokenURL.Host {
+				logger.Warn(
+					ctx,
+					"Refresh token issuer '%s' doesn't match token URL '%s', "+
+						"that probably means that you are using a wrong "+
+						"refresh token",
+					refreshIssuer, tokenURL,
+				)
+			}
+		}
 	}
 
 	// Set the default authentication scopes, if needed:
